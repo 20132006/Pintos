@@ -29,26 +29,12 @@ static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
-static bool ticks_less_func (const struct list_elem *a, 
-                             const struct list_elem *b,
-                             void *aux UNUSED);
 
-struct list BlockedThreadList;
-
-struct ThreadSleep
-{
-    int64_t num_ticks;
-    int64_t start_time;
-    struct semaphore Semaphore;
-    struct list_elem List;
-};
-
-
-
+/* Sets up the timer to interrupt TIMER_FREQ times per second,
+   and registers the corresponding interrupt. */
 void
 timer_init (void) 
 {
-  list_init(&BlockedThreadList);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
@@ -98,22 +84,6 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
-bool
-ticks_less_func (const struct list_elem *a,
-                 const struct list_elem *b,
-                 void *aux UNUSED)
-{
-  struct ThreadSleep * a_sleeping;
-  struct ThreadSleep * b_sleeping;
-  a_sleeping = list_entry (a, struct ThreadSleep, List);
-  b_sleeping = list_entry (b, struct ThreadSleep, List);
-
-  int64_t a_tick = a_sleeping->start_time + a_sleeping->num_ticks;
-  int64_t b_tick = b_sleeping->start_time + b_sleeping->num_ticks;
-
-  return a_tick < b_tick; 
-}
-
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
@@ -122,21 +92,8 @@ timer_sleep (int64_t ticks)
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
-
-  struct ThreadSleep temp_thread;
-
-  temp_thread.start_time = start;
-  temp_thread.num_ticks = ticks;
-
-  sema_init(&temp_thread.Semaphore,0);
-
-  enum intr_level pre_state = intr_disable();
-
-  list_insert_ordered (&BlockedThreadList,&temp_thread.List,&ticks_less_func, NULL);
-
-  intr_set_level (pre_state);
-
-  sema_down (&temp_thread.Semaphore);
+  while (timer_elapsed (start) < ticks) 
+    thread_yield ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -214,26 +171,6 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
-  
-  struct list_elem * current_elem;
-  struct ThreadSleep * current_item;
-  
-  for (;!list_empty (&BlockedThreadList);current_elem = list_pop_front (&BlockedThreadList))
-  {
-    //current_elem = list_pop_front (&sleeping_threads_list);  
-    current_item = list_entry (current_elem, struct ThreadSleep, List);
-
-    if (current_item->start_time+current_item->num_ticks <= ticks)
-    {
-      sema_up (&current_item->Semaphore);
-    }
-    else
-    {
-      list_push_front (&BlockedThreadList, current_elem);
-    break;
-    }
-  }
-
   thread_tick ();
 }
 
